@@ -173,9 +173,9 @@ function SingleEnvironmentPolicyTests
 
             $newPolicy = CreatePolicyObject -EnvironmentType "SingleEnvironment" -PolicyDisplayName $PolicyDisplayName
             $environment = [pscustomobject]@{
-                id = "/providers/admin/environment"
+                id = "/providers/Microsoft.BusinessAppPlatform/scopes/admin/environments/$($environment.EnvironmentName)"
                 name = $environment.EnvironmentName
-                type = "/providers/dummyEnvironments"
+                type = "Microsoft.BusinessAppPlatform/scopes/environments"
             }
 
             $newPolicy.environments += $environment
@@ -359,17 +359,15 @@ function OldAPIToNewAPICompatibilityTests
             $newCreatedPolicy = New-DlpPolicy -NewPolicy $newPolicy
             StringsAreEqual -Expect $AllEnvironmentsPolicyDisplayName -Actual $newCreatedPolicy.displayName
 
-            # define test data for old API
+            # define customer connector for old API
             $TenantPolicyTestDisplayName = "TenantPolicyDemo"
             $EnvironmentPolicyDisplayName = "EnvironmentPolicyDemo"
-            $NonBusinessConnectorName = "Amazon Redshift"
-            $NonBusinessConnectorId = "/providers/Microsoft.PowerApps/apis/shared_amazonredshift"
+            $NonBusinessConnectorName = "shared_graph-2dapi-2dtest-5f490bdb62ac165ca8-5fbf5c83266b2adfb5"
+            $NonBusinessConnectorId = "/providers/Microsoft.PowerApps/scopes/admin/environments/Default-bde1d79a-4825-4883-a114-b4a801feaf16/apis/shared_graph-2dapi-2dtest-5f490bdb62ac165ca8-5fbf5c83266b2adfb5"
             $NonBusinessConnectorType = "Microsoft.PowerApps/apis"
-            $BusinessConnectorName = "Dropbox"
-            $BusinessConnectorId = "/providers/Microsoft.PowerApps/apis/shared_dropbox"
-
-            [Parameter(Mandatory = $false)]
-            [string]$BusinessConnectorType = "Microsoft.PowerApps/apis"
+            $BusinessConnectorName = "shared_graph-2dapi-2dtest-5f490bdb62ac165ca8-5fbf5c83266b2adfb5"
+            $BusinessConnectorId = "/providers/Microsoft.PowerApps/scopes/admin/environments/Default-bde1d79a-4825-4883-a114-b4a801feaf16/apis/shared_graph-2dapi-2dtest-5f490bdb62ac165ca8-5fbf5c83266b2adfb5"
+            $BusinessConnectorType = "Microsoft.PowerApps/apis"
 
             # create test tenant policy
             Write-Host "Create an old tenant policy"
@@ -612,6 +610,1182 @@ function NewAPIToOldAPICompatibilityTests
     }
 }
 
+function DLPPolicyConnectorActionControlCrud
+{
+    param
+    (
+        [Parameter(Mandatory = $false)]
+        [string]$TenantPolicyTestDisplayName = "TenantPolicyDemo"
+    )
+    process 
+    {
+        $connectorId = "/providers/Microsoft.PowerApps/apis/shared_msnweather"
+        $connectorName = "shared_msnweather"
+        $desiredActionBehavior = "Block"
+        $desiredDefaultBehavior = "Allow"
+        $tenantId = $global:currentSession.tenantId;
+
+        Write-Host "Get connector shared_msnweather actions"
+        $connectorActions = Get-AdminPowerAppConnectorAction -ConnectorName $connectorName
+        $connectorAction = $connectorActions[0]
+
+        Write-Host "Get all policies"
+        $policies = Get-DlpPolicy
+        if ($policies -ne $null -and $policies.value -ne $null)
+        {
+            foreach ($policy in $policies.value)
+            {
+                if ($policy.displayName -eq $TenantPolicyTestDisplayName)
+                {
+                    $tenantPolicy = $policy
+                    break
+                }
+            }
+        }
+
+        if ($tenantPolicy -eq $null)
+        {
+            Write-Host "Create test tenant policy."
+            $tenantPolicy = New-DlpPolicy -DisplayName $TenantPolicyTestDisplayName -EnvironmentType "AllEnvironments"
+        }
+
+        Write-Host "Get connector configuration."
+        $policyConnectorConfigurations = Get-PowerAppDlpPolicyConnectorConfigurations  -TenantId $tenantId -PolicyName $tenantPolicy.Name
+
+        $connectorConfigurationsAlreadyExists = $false
+        if ($policyConnectorConfigurations -ne $null)
+        {
+            $connectorConfigurationsAlreadyExists = $true
+        }
+        else
+        {
+            $policyConnectorConfigurations = New-Object -TypeName PSObject
+        }
+
+        if ($policyConnectorConfigurations.connectorActionConfigurations -eq $null)
+        {
+            $policyConnectorConfigurations | Add-Member -PassThru -MemberType NoteProperty -Name connectorActionConfigurations -Value @()
+        }
+
+        Write-Host "Loop through policy connector action configurations and find the connector based on connector Id."
+        $msnWeatherConnectorActionConfigurations = $null
+        foreach ($connectorConfiguration in $policyConnectorConfigurations.connectorActionConfigurations)
+        {
+            if ($connectorConfiguration.connectorId -eq $connectorId)
+            {
+                $msnWeatherConnectorActionConfigurations = $connectorConfiguration
+                break
+            }
+        }
+
+        Write-Host "If the connector action configuration does not exist, add the connector action configuration."
+        if ($msnWeatherConnectorActionConfigurations -eq $null)
+        {
+            $msnWeatherConnectorActionConfigurations = [pscustomobject]@{  
+                connectorId = $connectorId
+                actionRules = @()
+                defaultConnectorActionRuleBehavior = $desiredDefaultBehavior
+            }
+
+            $policyConnectorConfigurations.connectorActionConfigurations += $msnWeatherConnectorActionConfigurations
+        }
+ 
+
+        Write-Host "Loop through policy connector action configurations action rules and find the action rule based on connector action."
+        $msnWeatherConnectorActionRule = $null
+        foreach ($actionRule in $msnWeatherConnectorActionConfigurations.actionRules)
+        {
+            if ($actionRule.ActionId -eq $connectorAction.Id)
+            {
+                $msnWeatherConnectorActionRule = $actionRule
+                break
+            }
+        }
+         
+        Write-Host "If the action rule does not exist, add the action rule."
+        if ($msnWeatherConnectorActionRule -eq $null)
+        {
+            $msnWeatherConnectorActionRule = [pscustomobject]@{  
+                ActionId = $connectorAction.Id
+                behavior = $desiredActionBehavior
+            }
+
+            $msnWeatherConnectorActionConfigurations.actionRules += $msnWeatherConnectorActionRule
+        }
+
+        if ($connectorConfigurationsAlreadyExists)
+        {
+            Write-Host "Update the policy connector configurations."
+            Set-PowerAppDlpPolicyConnectorConfigurations -PolicyName $tenantPolicy.Name -UpdatedConnectorConfigurations $policyConnectorConfigurations -TenantId $tenantId | Out-Null
+            $removeConnectorConfigration = $true
+        }
+        else
+        {
+            Write-Host "Create a new dlp policy connector configurations."
+            New-PowerAppDlpPolicyConnectorConfigurations -NewDlpPolicyConnectorConfigurations $policyConnectorConfigurations -TenantId $tenantId -PolicyName $tenantPolicy.Name | Out-Null
+            $removeConnectorConfigration = $false
+        }
+
+        if ($removeConnectorConfigration)
+        {
+            Write-Host "Remove the policy connector configurations."
+            Remove-PowerAppDlpPolicyConnectorConfigurations -TenantId $tenantId -PolicyName $tenantPolicy.Name | Out-Null
+        }
+    }
+}
+
+function DLPPolicyConnectorEndpointControlCrud
+{
+    param
+    (
+        [Parameter(Mandatory = $false)]
+        [string]$TenantPolicyTestDisplayName = "TenantPolicyDemo"
+    )
+    process 
+    {
+        $connectorId = "/providers/Microsoft.PowerApps/apis/shared_sql"
+        $connectorName = "shared_sql"
+        $initialEndpoint = "www.a.*.com"
+        $updatedEndPoint = "www.b.*.com"
+
+        $tenantId = $global:currentSession.tenantId;
+
+        Write-Host "Get all policies"
+        $policies = Get-DlpPolicy
+        if ($policies -ne $null -and $policies.value -ne $null)
+        {
+            foreach ($policy in $policies.value)
+            {
+                if ($policy.displayName -eq $TenantPolicyTestDisplayName)
+                {
+                    $tenantPolicy = $policy
+                    break
+                }
+            }
+        }
+
+        if ($tenantPolicy -eq $null)
+        {
+            Write-Host "Create test tenant policy."
+            $tenantPolicy = New-DlpPolicy -DisplayName $TenantPolicyTestDisplayName -EnvironmentType "AllEnvironments"
+        }
+
+        Write-Host "Get connector configuration."
+        $policyConnectorConfigurations = Get-PowerAppDlpPolicyConnectorConfigurations  -TenantId $tenantId -PolicyName $tenantPolicy.Name
+
+        $connectorConfigurationsAlreadyExists = $false
+        if ($policyConnectorConfigurations -ne $null)
+        {
+            $connectorConfigurationsAlreadyExists = $true
+        }
+        else
+        {
+            $policyConnectorConfigurations = New-Object -TypeName PSObject
+        }
+
+        if ($policyConnectorConfigurations.endpointConfigurations -eq $null)
+        {
+            $policyConnectorConfigurations | Add-Member -PassThru -MemberType NoteProperty -Name endpointConfigurations -Value @()
+        }
+
+        Write-Host "Loop through policy connector endpoint configurations and find the connector configuration based on connector Id."
+        $sqlConnectorEndpointConfigurations = $null
+        foreach ($connectorConfiguration in $policyConnectorConfigurations.endpointConfigurations)
+        {
+            if ($connectorConfiguration.connectorId -eq $connectorId)
+            {
+                $sqlConnectorEndpointConfigurations = $connectorConfiguration
+                break
+            }
+        }
+
+        Write-Host "If the connector endpoint configuration does not exist, add the connector endpoint configuration."
+        if ($sqlConnectorEndpointConfigurations -eq $null)
+        {
+            $sqlConnectorEndpointConfigurations = [pscustomobject]@{  
+                connectorId = $connectorId
+                endpointRules = @()
+            }
+
+            $policyConnectorConfigurations.endpointConfigurations += $sqlConnectorEndpointConfigurations
+        } 
+
+        Write-Host "Loop through policy connector endpoint configurations endpoint rules and find the endpoint rule based on the endpoint."
+        $endpointUpdated = $false
+        foreach ($endpointRule in $sqlConnectorEndpointConfigurations.endpointRules)
+        {
+            if ($endpointRule.endPoint -eq $initialEndpoint)
+            {
+                # Update the endpoint rule in the 3nd run.
+                $endpointRule.endPoint = $updatedEndPoint
+                $endpointUpdated = $true
+                break
+            }
+        }
+         
+        Write-Host "If the endpoint rule does not exist, add the endpoint rule."
+        if ($sqlConnectorEndpointConfigurations.endpointRules.Count -eq 0)
+        {
+            # Add the last endpoint rule in the first run.
+            $lastEndpointRule = [pscustomobject]@{
+                order = 1
+                behavior = "Deny"
+                endPoint = "*"
+            }
+
+            $sqlConnectorEndpointConfigurations.endpointRules += $lastEndpointRule
+        }
+        else
+        {
+            # Increase the last endpoint rule order
+            $lastOrder = $sqlConnectorEndpointConfigurations.endpointRules[$sqlConnectorEndpointConfigurations.endpointRules.Count - 1].order
+            $sqlConnectorEndpointConfigurations.endpointRules[$sqlConnectorEndpointConfigurations.endpointRules.Count - 1].order = $lastOrder + 1
+
+            # Add a new endpoint rule
+            $newEndPointRule = [pscustomobject]@{
+                order = $lastOrder
+                behavior = "Allow"
+                endPoint = $initialEndpoint
+            }
+
+            $sqlConnectorEndpointConfigurations.endpointRules += $newEndPointRule
+            
+            # Sort endpoint rules by order in ascending
+            $sqlConnectorEndpointConfigurations.endpointRules = $sqlConnectorEndpointConfigurations.endpointRules | Sort-Object -Property order
+
+            # After the 3nd run, there are 3 endpoint rules.
+            #[DBG]: PS C:\>> $sqlConnectorEndpointConfigurations.endpointRules
+            #
+            #order behavior endPoint   
+            #----- -------- --------   
+            #    1 Allow    www.b.*.com
+            #    2 Allow    www.a.*.com
+            #    3 Deny     *        
+        }
+
+        $removeConnectorConfigration = $false
+        if ($connectorConfigurationsAlreadyExists)
+        {
+            Write-Host "Update the policy connector configurations."
+            Set-PowerAppDlpPolicyConnectorConfigurations -PolicyName $tenantPolicy.Name -UpdatedConnectorConfigurations $policyConnectorConfigurations -TenantId $tenantId | Out-Null
+
+            if ($endpointUpdated)
+            {
+                $removeConnectorConfigration = $true
+            }
+        }
+        else
+        {
+            Write-Host "Create a new dlp policy connector configurations."
+            New-PowerAppDlpPolicyConnectorConfigurations -NewDlpPolicyConnectorConfigurations $policyConnectorConfigurations -TenantId $tenantId -PolicyName $tenantPolicy.Name | Out-Null
+        }
+
+        if ($removeConnectorConfigration)
+        {
+            Write-Host "Remove the policy connector configurations."
+            Remove-PowerAppDlpPolicyConnectorConfigurations -TenantId $tenantId -PolicyName $tenantPolicy.Name | Out-Null
+        }
+    }
+}
+
+function Add-ConnectorToBusinessDataGroupSample
+{
+    <#
+    .SYNOPSIS
+    Sets connector to the business data group of data loss policy.
+    .DESCRIPTION
+    The code is changed to using new DLP API and set connector to the business data group depending on parameters. 
+    .PARAMETER PolicyName
+    The PolicyName's identifier.
+    .PARAMETER ConnectorName
+    The Connector's identifier.
+    .EXAMPLE
+    Add-ConnectorToBusinessDataGroup -PolicyName e25a94b2-3111-468e-9125-3d3db3938f13 -ConnectorName shared_office365users
+    Sets the connector to Confidential group of policyname e25a94b2-3111-468e-9125-3d3db3938f13.
+    #> 
+    param
+    (
+        [Parameter(Mandatory = $true, ValueFromPipelineByPropertyName = $true)]
+        [string]$PolicyName,
+
+        [Parameter(Mandatory = $true, ValueFromPipelineByPropertyName = $true)]
+        [string]$ConnectorName
+    )
+    process 
+    {
+        $policy = Get-DlpPolicy -PolicyName $PolicyName
+        $confidentialGroup = $policy.connectorGroups | Where-Object { $_.classification -eq 'Confidential' }
+        $connectorInConfidential = $confidentialGroup.connectors | where { $_.name -eq $ConnectorName }
+
+        if($connectorInConfidential -ne $null)
+        {
+            Write-Error "Connector already exists in Confidential group"
+            return $null
+        }
+
+        $connector = Get-PowerAppConnector -EnvironmentName $policy.environments[0].name -ConnectorName $ConnectorName `
+            | %{ New-Object -TypeName PSObject -Property @{ id = $_.connectorId; name = ($_.connectorId -split "/apis/")[1]; type = $_.internal.type } }
+
+        if($connector -eq $null)
+        {
+            Write-Error "No connector with specified name found"
+            return $null
+        }
+
+        #Add the connector to the confidential group of policy
+        $confidentialGroup.connectors += $connector
+
+        #remove the connector from General group if exist
+        $generalGroup = $policy.connectorGroups | Where-Object { $_.classification -eq 'General' }
+        $generalConnectorsWithoutProvidedConnector = $generalGroup.connectors | Where-Object { $_.id -ne $connector.id }
+        
+        if ($generalConnectorsWithoutProvidedConnector -eq $null)
+        {
+            $generalConnectorsWithoutProvidedConnector =  @()
+        }
+        
+        $generalGroup.connectors = [Array]$generalConnectorsWithoutProvidedConnector
+
+        #Update policy
+        Set-DlpPolicy -PolicyName $policy.name -UpdatedPolicy $policy
+    }
+}
+
+function Remove-ConnectorFromBusinessDataGroupSample
+{
+     <#
+    .SYNOPSIS
+    Removes connector from the business data group of data loss policy.
+    .DESCRIPTION
+    The Remove-ConnectorFromBusinessDataGroup removes connector from the business data group of DLP depending on parameters. 
+    .PARAMETER PolicyName
+    The PolicyName's identifier.
+    .PARAMETER ConnectorName
+    The Connector's identifier.
+    .EXAMPLE
+    Remove-ConnectorFromBusinessDataGroup -PolicyName e25a94b2-3111-468e-9125-3d3db3938f13 -ConnectorName shared_office365users
+    Removes the connector from BusinessData group of policyname e25a94b2-3111-468e-9125-3d3db3938f13.
+    #> 
+    param
+    (
+        [Parameter(Mandatory = $true, ValueFromPipelineByPropertyName = $true)]
+        [string]$PolicyName,
+
+        [Parameter(Mandatory = $true, ValueFromPipelineByPropertyName = $true)]
+        [string]$ConnectorName
+    )
+    process 
+    {
+        $policy = Get-DlpPolicy -PolicyName $PolicyName
+        $generalGroup = $policy.connectorGroups | Where-Object { $_.classification -eq 'General' }
+        $connectorInGeneral = $generalGroup.connectors | where { $_.name -eq $ConnectorName }
+
+        if($connectorInGeneral -ne $null)
+        {
+            Write-Error "Connector already exists in General group"
+            return $null
+        }
+
+        $connector = Get-PowerAppConnector -EnvironmentName $policy.environments[0].name -ConnectorName $ConnectorName `
+            | %{ New-Object -TypeName PSObject -Property @{ id = $_.connectorId; name = ($_.connectorId -split "/apis/")[1]; type = $_.internal.type } }
+
+        if($connector -eq $null)
+        {
+            Write-Error "No connector with specified name found"
+            return $null
+        }
+
+        #Add the connector to the General group of the policy
+        $generalGroup.connectors += $connector
+
+        #remove the connector from Confidential group of the policy
+        $confidentialGroup = $policy.connectorGroups | Where-Object { $_.classification -eq 'Confidential' }
+        $confidentialConnectorsWithoutProvidedConnector = $confidentialGroup.connectors | where { $_.id -ne $connector.id }
+
+        if($confidentialConnectorsWithoutProvidedConnector -eq $null)
+        {
+            $confidentialConnectorsWithoutProvidedConnector =  @()
+        }
+        
+        $confidentialGroup.connectors = [Array]$confidentialConnectorsWithoutProvidedConnector
+
+        #Update policy
+        Set-DlpPolicy -PolicyName $policy.name -UpdatedPolicy $policy
+    }
+}
+
+function Add-CustomConnectorToPolicySample
+{
+    <#
+    .SYNOPSIS
+    Adds a custom connector to the given group.
+    .DESCRIPTION
+    The Add-CustomConnectorToPolicySample adds a custom connector to a specific group of a DLP policy depending on parameters.
+    .PARAMETER PolicyName
+    The PolicyName's identifier.
+    .PARAMETER GroupName
+    The name of the group to add the connector to, lbi or hbi.
+    .PARAMETER ConnectorName
+    The Custom Connector's name.
+    .PARAMETER ConnectorId
+    The Custom Connector's ID.
+    .PARAMETER ConnectorType
+    The Custom Connector's type.
+    .EXAMPLE
+    Add-CustomConnectorToPolicySample -EnvironmentName Default-02c201b0-db76-4a6a-b3e1-a69202b479e6 -PolicyName 7b914a18-ad8b-4f15-8da5-3155c77aa70a -ConnectorName BloopBlop -ConnectorId /providers/Microsoft.PowerApps/apis/BloopBlop -ConnectorType Microsoft.PowerApps/apis -GroupName hbi
+    Adds the custom connector 'BloopBlop' to BusinessData group of policy name 7b914a18-ad8b-4f15-8da5-3155c77aa70a in environment Default-02c201b0-db76-4a6a-b3e1-a69202b479e6.
+    #>
+    param
+    (
+        [Parameter(Mandatory = $true, ValueFromPipelineByPropertyName = $true)]
+        [string]$PolicyName,
+
+        [Parameter(Mandatory = $true, ValueFromPipelineByPropertyName = $true)]
+        [string]$ConnectorName,
+
+        [Parameter(Mandatory = $true, ValueFromPipelineByPropertyName = $true)]
+        [string][ValidateSet("lbi", "hbi")]$GroupName,
+
+        [Parameter(Mandatory = $true, ValueFromPipelineByPropertyName = $true)]
+        [string]$ConnectorId,
+
+        [Parameter(Mandatory = $true, ValueFromPipelineByPropertyName = $true)]
+        [string]$ConnectorType
+    )
+    process
+    {
+        $policy = Get-DlpPolicy -PolicyName $PolicyName
+
+        $generalGroup = $policy.connectorGroups | Where-Object { $_.classification -eq 'General' }
+        $connectorInGeneral = $generalGroup.connectors | where { $_.id -eq $ConnectorId }
+
+        $confidentialGroup = $policy.connectorGroups | Where-Object { $_.classification -eq 'Confidential' }
+        $connectorInConfidential = $confidentialGroup.connectors | where { $_.id -eq $ConnectorId }
+
+        if($connectorInGeneral -eq $null -and $connectorInConfidential -eq $null)
+        {
+            $customConnector = [pscustomobject]@{
+                id = $ConnectorId
+                name = $ConnectorName
+                type = $ConnectorType
+            }
+
+            if ($GroupName -eq "hbi")
+            {
+                #Add it to the confidential group of the policy
+                $confidentialGroup.connectors += $customConnector
+            }
+            else
+            {
+                #Add it to the general group of the policy
+                $generalGroup.connectors += $customConnector
+            }
+
+            #Update policy
+            Set-DlpPolicy -PolicyName $policy.name -UpdatedPolicy $policy
+        }
+        else
+        {
+            if($connectorInConfidential -ne $null)
+            {
+                Write-Error "The given connector is already present in the hbi group."
+            }
+            else
+            {
+                Write-Error "The given connector is already present in the lbi group."
+            }
+            return $null
+        }
+    }
+}
+
+function Remove-CustomConnectorFromPolicySample
+{
+    <#
+    .SYNOPSIS
+    Deletes a custom connector from the given DLP policy.
+    .DESCRIPTION
+    The Remove-CustomConnectorFromPolicySample deletes a custom connector from the specific DLP policy. 
+    .PARAMETER PolicyName
+    The PolicyName's identifier.
+    .PARAMETER ConnectorName
+    The connector's identifier.
+    .EXAMPLE
+    Remove-CustomConnectorFromPolicySample -PolicyName 7b914a18-ad8b-4f15-8da5-3155c77aa70a -ConnectorName shared_office365users
+    Deletes the custom connector 'shared_office365users' from the DLP policy of policy name 7b914a18-ad8b-4f15-8da5-3155c77aa70a.
+    #>
+    param
+    (
+        [Parameter(Mandatory = $true, ValueFromPipelineByPropertyName = $true)]
+        [string]$PolicyName,
+
+        [Parameter(Mandatory = $true, ValueFromPipelineByPropertyName = $true)]
+        [string]$ConnectorName
+    )
+    process
+    {
+        $policy = Get-DlpPolicy -PolicyName $PolicyName
+
+        $generalGroup = $policy.connectorGroups | Where-Object { $_.classification -eq 'General' }
+        $connectorInGeneral = $generalGroup.connectors | where { $_.name -eq $ConnectorName }
+
+        $confidentialGroup = $policy.connectorGroups | Where-Object { $_.classification -eq 'Confidential' }
+        $connectorInConfidential = $confidentialGroup.connectors | where { $_.name -eq $ConnectorName }
+
+        if($connectorInGeneral -eq $null -and $connectorInConfidential -eq $null)
+        {
+            Write-Error "The given connector is not in the policy."
+            return $null
+        }
+        else
+        {
+            if($connectorInGeneral -eq $null)
+            {
+                #remove the connector from confidential group of policy
+                $confidentialConnectorsWithoutProvidedConnector = $confidentialGroup.connectors | where { $_.name -ne $ConnectorName }
+                $confidentialGroup.connectors = [Array]$confidentialConnectorsWithoutProvidedConnector
+
+                #Update policy
+                Set-DlpPolicy -PolicyName $policy.name -UpdatedPolicy $policy
+            }
+            else
+            {
+                #remove the connector from general group of policy
+                $generalConnectorsWithoutProvidedConnector = $generalGroup.connectors | Where-Object { $_.name -ne $ConnectorName }
+                $generalGroup.connectors = [Array]$generalConnectorsWithoutProvidedConnector
+
+                #Update policy
+                Set-DlpPolicy -PolicyName $policy.name -UpdatedPolicy $policy
+            }
+        }
+    }
+}
+
+function CustomerConnectorUpdateTests
+{
+    param
+    (
+        [Parameter(Mandatory = $true)]
+        [string]$EnvironmentDisplayName,
+
+        [Parameter(Mandatory = $false)]
+        [string]$PolicyDisplayName = "Test policy for CustomerConnectorUpdateTests",
+
+        [Parameter(Mandatory = $false)]
+        [string]$EndPoint,
+
+        [Parameter(Mandatory = $false)]
+        [string]$TenantAdminName,
+
+        [Parameter(Mandatory = $false)]
+        [string]$TenantAdminPassword,
+
+        [Parameter(Mandatory = $false)]
+        [string]$EnvironmentAdminName,
+
+        [Parameter(Mandatory = $false)]
+        [string]$EnvironmentAdminPassword
+    )
+    process 
+    {
+        try
+        {
+            Write-Host "`r`nCustomerConnectorUpdateTests started`r`n"
+
+            Write-Host "Change to EnvironmentAdmin"
+            $Password = ConvertTo-SecureString $EnvironmentAdminPassword -AsPlainText -Force
+            Add-PowerAppsAccount -Endpoint $EndPoint -Username $EnvironmentAdminName -Password $Password
+                
+            $policy = (Get-DlpPolicy).Value | where { $_.displayName -eq $PolicyDisplayName }
+            if ($policy -eq $null)
+            {
+                $EnvironmentDisplayName = $EnvironmentDisplayName + " for NonAdmin"
+                $environment = CreateEnvironmentWithoutCDSDatabase -EnvironmentDisplayName $EnvironmentDisplayName -EnvironmentSku "Production"
+                if($environment -eq $null)
+                {
+                    throw "CreateEnvironment failed."
+                }
+
+                $newPolicy = CreatePolicyObject -EnvironmentType "SingleEnvironment" -PolicyDisplayName $PolicyDisplayName
+                $environment = [pscustomobject]@{
+                    id = "/providers/admin/environment"
+                    name = $environment.EnvironmentName
+                    type = "/providers/dummyEnvironments"
+                }
+
+                $newPolicy.environments += $environment
+        
+                Write-Host "Create a new policy for SingleEnvironment"
+                $policy = New-DlpPolicy -NewPolicy $newPolicy
+                StringsAreEqual -Expect $PolicyDisplayName -Actual $policy.displayName
+            }
+
+            # define connector test data
+            $BusinessConnectorId = "/providers/Microsoft.PowerApps/apis/shared_msnweather"
+            $BusinessConnectorName = "shared_msnweather"
+            $BusinessConnectorType = "Microsoft.PowerApps/apis"
+
+            if ((CheckConnectorExist -Policy $policy -Classification "Confidential" -ConnectorName $BusinessConnectorName) -or
+                (CheckConnectorExist -Policy $policy -Classification "General" -ConnectorName $BusinessConnectorName))
+            {
+                # remove the connector from the policy
+                $response = Remove-CustomConnectorFromPolicySample -PolicyName $policy.Name -ConnectorName $BusinessConnectorName
+                $result = CheckConnectorExist -Policy $response.Internal -Classification "Confidential" -ConnectorName $BusinessConnectorName
+                IsFalse -Result $result -Message "The connector is not removed."
+                $result = CheckConnectorExist -Policy $response.Internal -Classification "General" -ConnectorName $BusinessConnectorName
+                IsFalse -Result $result -Message "The connector is not removed."
+            }
+
+            # add a connector to the policy
+            $response = Add-CustomConnectorToPolicySample -PolicyName $policy.Name -ConnectorName $BusinessConnectorName -ConnectorId $BusinessConnectorId -ConnectorType $BusinessConnectorType -GroupName hbi
+            $result = CheckConnectorExist -Policy $response.Internal -Classification "Confidential" -ConnectorName $BusinessConnectorName
+            IsTrue -Result $result -Message "The connector is not in confidential group."
+
+            # remove the connector from the policy
+            $response = Remove-CustomConnectorFromPolicySample -PolicyName $policy.Name -ConnectorName $BusinessConnectorName
+            $result = CheckConnectorExist -Policy $response.Internal -Classification "Confidential" -ConnectorName $BusinessConnectorName
+            IsFalse -Result $result -Message "The connector is not removed."
+
+            # add the connector to confidential group
+            $response = Add-ConnectorToBusinessDataGroupSample -PolicyName $policy.Name -ConnectorName $BusinessConnectorName
+            $result = CheckConnectorExist -Policy $response.Internal -Classification "Confidential" -ConnectorName $BusinessConnectorName
+            IsTrue -Result $result -Message "The connector is not in confidential group."
+
+            # remove the connector from confidential group
+            $response = Remove-ConnectorFromBusinessDataGroupSample -PolicyName $policy.Name -ConnectorName $BusinessConnectorName
+            $result = CheckConnectorExist -Policy $response.Internal -Classification "Confidential" -ConnectorName $BusinessConnectorName
+            IsFalse -Result $result -Message "The connector is not removed."
+
+            Write-Host "Change user back to GlobalAdmin"
+            $Password = ConvertTo-SecureString $TenantAdminPassword -AsPlainText -Force
+            Add-PowerAppsAccount -Endpoint $EndPoint -Username $TenantAdminName -Password $Password
+
+            Write-Host "`r`nCustomerConnectorUpdateTests completed"
+        } catch {
+            WriteStack
+        }
+    }
+}
+
+function UpdatePolicyEnvironmentsForTeams
+{
+    param
+    (
+        [Parameter(Mandatory = $true)]
+        [string]$OnlyEnvironmentsPolicyName,
+
+        [Parameter(Mandatory = $true)]
+        [string]$OnlyEnvironmentsPolicyDisplayName,
+
+        [Parameter(Mandatory = $false)]
+        [string]$ExceptEnvironmentsPolicyName,
+
+        [Parameter(Mandatory = $false)]
+        [string]$ExceptEnvironmentsPolicyDisplayName,
+
+        [Parameter(Mandatory = $false)]
+        [string[]]$ExceptionEnvironmentIds
+    )
+
+    Write-Host "UpdatePolicyEnvironmentsForTeams starts."
+
+    $onlyEnvironmentsPolicy = Get-DlpPolicy -PolicyName $OnlyEnvironmentsPolicyName
+    if ($onlyEnvironmentsPolicy.environmentType -ne "OnlyEnvironments" -or
+        $onlyEnvironmentsPolicy.displayName -ne $OnlyEnvironmentsPolicyDisplayName)
+    {
+        Write-Host "Invalid OnlyEnvironments policy."
+        return
+    }
+
+    $exceptionEnvironmentsPolicy = $null
+    if (-not [string]::IsNullOrWhiteSpace($ExceptEnvironmentsPolicyName) -and
+        -not [string]::IsNullOrWhiteSpace($ExceptEnvironmentsPolicyDisplayName))
+    {
+        $exceptionEnvironmentsPolicy = Get-DlpPolicy -PolicyName $ExceptEnvironmentsPolicyName
+        if ($exceptionEnvironmentsPolicy.environmentType -ne "ExceptEnvironments" -or
+            $exceptionEnvironmentsPolicy.displayName -ne $ExceptEnvironmentsPolicyDisplayName)
+        {
+            Write-Host "Invalid ExceptEnvironments policy."
+            return        
+        }
+    }
+
+    # get Teams environments
+    $environments = Get-AdminPowerAppEnvironment -EnvironmentSku "Teams" -ApiVersion "2020-06-01"
+
+    $teamEnvironments = @()
+    foreach ($env in $environments)
+    {
+        $item = [pscustomobject]@{
+            id = $env.Internal.id
+            name = $env.Internal.name
+            type = $env.Internal.type
+        }
+        $teamEnvironments += $item
+    }
+
+    if ($teamEnvironments.Count -gt 0)
+    {
+        $onlyEnvironmentsPolicy.environments = $teamEnvironments
+        $response = Set-DlpPolicy -PolicyName $onlyEnvironmentsPolicy.name -UpdatedPolicy $onlyEnvironmentsPolicy
+
+        StringsAreEqual -Expect $OnlyEnvironmentsPolicyName -Actual $response.Internal.name
+        Write-Host "OnlyEnvironments policy is updated."
+    }
+    else
+    {
+        Write-Host "There is no Teams environment found."
+    }
+
+    if ($exceptionEnvironmentsPolicy -ne $null)
+    {
+        # add teams environment into ExceptEnvironments policy
+        foreach ($environment in $teamEnvironments)
+        {
+            if (($exceptionEnvironmentsPolicy.environments | where {$_.id -eq $environment.Id}) -eq $null)
+            {
+                # add teams environment
+                $exceptionEnvironmentsPolicy.environments += $environment
+            }
+        }
+
+        if ($ExceptionEnvironmentIds -ne $null)
+        {
+            foreach ($environmentId in $ExceptionEnvironmentIds)
+            {
+                $environment = $exceptionEnvironmentsPolicy.environments | where {$_.name -eq $environmentId}
+                if ($environment -eq $null)
+                {
+                    # add the environment from $ExceptionEnvironmentIds into the policy
+                    $environment = Get-AdminPowerAppEnvironment -EnvironmentName $environmentId
+                    if ($environment.Internal.id -ne $null)
+                    {
+                        $item = [pscustomobject]@{
+                            id = $environment.Internal.id
+                            name = $environment.Internal.name
+                            type = $environment.Internal.type
+                        }
+                        $exceptionEnvironmentsPolicy.environments += $item
+                    }
+                    else
+                    {
+                        Write-Host "Get environment fails.`r`n$($environment.Internal.Message)"
+                    }
+                }
+            }
+        }
+
+        if ($exceptionEnvironmentsPolicy.environments.Count -gt 0)
+        {
+            $response = Set-DlpPolicy -PolicyName $exceptionEnvironmentsPolicy.name -UpdatedPolicy $exceptionEnvironmentsPolicy
+
+            if ($response.Internal.name -ne $null)
+            {
+                StringsAreEqual -Expect $ExceptEnvironmentsPolicyName -Actual $response.Internal.name
+                Write-Host "ExceptEnvironments policy is updated."
+            }
+            else
+            {
+                Write-Host "ExceptEnvironments policy update fails.`r`n$response.Error"
+            }
+        }
+        else
+        {
+            Write-Host "ExceptEnvironments policy is not updated."
+        }
+    }
+
+    Write-Host "UpdatePolicyEnvironmentsForTeams completes."
+}
+
+function EnableManagedEnvironments
+{
+    <#
+     .SYNOPSIS
+     Enables Managed Environments for the given environment.
+     .DESCRIPTION
+     The EnableManagedEnvironments cmdlet enables Managed Environments for the given environment by updating its governance configuration.
+     Use Get-Help EnableManagedEnvironments -Examples for more details.
+     .PARAMETER EnvironmentId
+     The id (usually a GUID) of the environment.
+     .EXAMPLE
+     EnableManagedEnvironments -EnvironmentId 8d996ece-8558-4c4e-b459-a51b3beafdb4
+     Enables Managed Environments for environment with id 8d996ece-8558-4c4e-b459-a51b3beafdb4.
+    #>
+    param
+    (
+        [Parameter(Mandatory = $true)]
+        [string]$EnvironmentId
+    )
+
+    Write-Host "Retrieving environment."
+
+    $environment = Get-AdminPowerAppEnvironment -EnvironmentName $EnvironmentId
+    if ($environment -eq $null)
+    {
+        Write-Host "No environment was found with the given id."
+        return
+    }
+
+    $governanceConfiguration = $environment.Internal.properties.governanceConfiguration
+    $governanceConfiguration = CoalesceGovernanceConfiguration -GovernanceConfiguration $governanceConfiguration
+    if ($governanceConfiguration.protectionLevel -eq "Standard")
+    {
+        Write-Host "The specified environment is already managed."
+        return
+    }
+
+    $governanceConfiguration.protectionLevel = "Standard"
+    
+    $response = Set-AdminPowerAppEnvironmentGovernanceConfiguration -EnvironmentName $EnvironmentId -UpdatedGovernanceConfiguration $GovernanceConfiguration
+    if ($response.Code -ne 202)
+    {
+        Write-Host "Failed to enable Managed Environments for the specified environment."
+        Write-Host $response.Internal.Message
+        return
+    }
+    
+    Write-Host "Enabled Managed Environments for the specified environment."    
+}
+
+function DisableManagedEnvironments
+{
+    <#
+     .SYNOPSIS
+     Disables Managed Environments for the given environment.
+     .DESCRIPTION
+     The DisableManagedEnvironments cmdlet enables Managed Environments for the given environment by updating its governance configuration.
+     Use Get-Help DisableManagedEnvironments -Examples for more details.
+     .PARAMETER EnvironmentId
+     The id (usually a GUID) of the environment.
+     .EXAMPLE
+     DisableManagedEnvironments -EnvironmentId 8d996ece-8558-4c4e-b459-a51b3beafdb4
+     Disables Managed Environments for environment with id 8d996ece-8558-4c4e-b459-a51b3beafdb4.
+    #>
+    param
+    (
+        [Parameter(Mandatory = $true)]
+        [string]$EnvironmentId
+    )
+
+    Write-Host "Retrieving environment."
+
+    $environment = Get-AdminPowerAppEnvironment -EnvironmentName $EnvironmentId
+    if ($environment -eq $null)
+    {
+        Write-Host "No environment was found with the given id."
+        return
+    }
+
+    $governanceConfiguration = $environment.Internal.properties.governanceConfiguration
+    $governanceConfiguration = CoalesceGovernanceConfiguration -GovernanceConfiguration $governanceConfiguration
+    if ($governanceConfiguration.protectionLevel -ne "Standard")
+    {
+        Write-Host "The specified environment is not managed."
+        return
+    }
+
+    $governanceConfiguration.protectionLevel = "Basic"
+    
+    $response = Set-AdminPowerAppEnvironmentGovernanceConfiguration -EnvironmentName $EnvironmentId -UpdatedGovernanceConfiguration $GovernanceConfiguration
+    if ($response.Code -ne 202)
+    {
+        Write-Host "Failed to disable Managed Environments for the specified environment."
+        Write-Host $response.Internal.Message
+        return
+    }
+    
+    Write-Host "Disabled Managed Environments for the specified environment."    
+}
+
+function IncludeInsightsForManagedEnvironmentsInWeeklyEmailDigest
+{
+    <#
+     .SYNOPSIS
+     Includes insights for the specified Managed environment from weekly email digest.
+     .DESCRIPTION
+     The IncludeInsightsForManagedEnvironmentsInWeeklyEmailDigest cmdlet includes insights for the specified Managed environment from weekly email digest.
+     Use Get-Help IncludeInsightsForManagedEnvironmentsInWeeklyEmailDigest -Examples for more details.
+     .PARAMETER EnvironmentId
+     The id (usually a GUID) of the environment.
+     .EXAMPLE
+     IncludeInsightsForManagedEnvironmentsInWeeklyEmailDigest -EnvironmentId 8d996ece-8558-4c4e-b459-a51b3beafdb4
+     Includes insights for Managed environment with id 8d996ece-8558-4c4e-b459-a51b3beafdb4 in the weekly email digest.
+    #>
+    param
+    (
+        [Parameter(Mandatory = $true)]
+        [string]$EnvironmentId
+    )
+
+    Write-Host "Retrieving environment."
+
+    $environment = Get-AdminPowerAppEnvironment -EnvironmentName $EnvironmentId
+    if ($environment -eq $null)
+    {
+        Write-Host "No environment was found with the given id."
+        return
+    }
+
+    $governanceConfiguration = $environment.Internal.properties.governanceConfiguration
+    $governanceConfiguration = CoalesceGovernanceConfiguration -GovernanceConfiguration $governanceConfiguration
+    if ($governanceConfiguration.protectionLevel -ne "Standard")
+    {
+        Write-Host "The specified environment is not managed."
+        return
+    }
+
+    if ($governanceConfiguration.settings.extendedSettings.excludeEnvironmentFromAnalysis -ne "True")
+    {
+        Write-Host "The specified environment is already included in weekly email digest."
+        return
+    }
+    
+    $governanceConfiguration.settings.extendedSettings.excludeEnvironmentFromAnalysis = "false"
+
+    $response = Set-AdminPowerAppEnvironmentGovernanceConfiguration -EnvironmentName $EnvironmentId -UpdatedGovernanceConfiguration $GovernanceConfiguration
+    if ($response.Code -ne 202)
+    {
+        Write-Host "Failed to include insights for the specified environment in weekly email digest."
+        Write-Host $response.Internal.Message
+        return
+    }
+    
+    Write-Host "Included insights for the specified environment in weekly email digest."    
+}
+
+function ExcludeInsightsForManagedEnvironmentsInWeeklyEmailDigest
+{
+    <#
+     .SYNOPSIS
+     Excludes insights for the specified Managed environment from weekly email digest.
+     .DESCRIPTION
+     The ExcludeInsightsForManagedEnvironmentsInWeeklyEmailDigest cmdlet excludes insights for the specified Managed environment from weekly email digest.
+     Use Get-Help ExcludeInsightsForManagedEnvironmentsInWeeklyEmailDigest -Examples for more details.
+     .PARAMETER EnvironmentId
+     The id (usually a GUID) of the environment.
+     .EXAMPLE
+     ExcludeInsightsForManagedEnvironmentsInWeeklyEmailDigest -EnvironmentId 8d996ece-8558-4c4e-b459-a51b3beafdb4
+     Excludes insights for Managed environment with id 8d996ece-8558-4c4e-b459-a51b3beafdb4 in the weekly email digest.
+    #>
+    param
+    (
+        [Parameter(Mandatory = $true)]
+        [string]$EnvironmentId
+    )
+
+    Write-Host "Retrieving environment."
+
+    $environment = Get-AdminPowerAppEnvironment -EnvironmentName $EnvironmentId
+    if ($environment -eq $null)
+    {
+        Write-Host "No environment was found with the given id."
+        return
+    }
+
+    $governanceConfiguration = $environment.Internal.properties.governanceConfiguration
+    $governanceConfiguration = CoalesceGovernanceConfiguration -GovernanceConfiguration $governanceConfiguration
+    if ($governanceConfiguration.protectionLevel -ne "Standard")
+    {
+        Write-Host "The specified environment is not managed."
+        return
+    }
+
+    if ($governanceConfiguration.settings.extendedSettings.excludeEnvironmentFromAnalysis -eq "True")
+    {
+        Write-Host "The specified environment is already excluded from weekly email digest."
+        return
+    }
+    
+    $governanceConfiguration.settings.extendedSettings.excludeEnvironmentFromAnalysis = "true"
+
+    $response = Set-AdminPowerAppEnvironmentGovernanceConfiguration -EnvironmentName $EnvironmentId -UpdatedGovernanceConfiguration $GovernanceConfiguration
+    if ($response.Code -ne 202)
+    {
+        Write-Host "Failed to exclude insights for the specified environment in weekly email digest."
+        Write-Host $response.Internal.Message
+        return
+    }
+    
+    Write-Host "Excluded insights for the specified environment in weekly email digest."    
+}
+
+function SetManagedEnvironmentSolutionCheckerEnforcementLevel
+{
+    <#
+     .SYNOPSIS
+     Sets solution checker enforcement for the specified Managed environment.
+     .DESCRIPTION
+     The SetManagedEnvironmentSolutionCheckerEnforcementLevel cmdlet sets solution checker enforcement for the specified Managed environment.
+     Use Get-Help SetManagedEnvironmentSolutionCheckerEnforcementLevel -Examples for more details.
+     .PARAMETER EnvironmentId
+     The id (usually a GUID) of the environment.
+     .PARAMETER Level
+     The enforcement level (none, warn, block).
+     .EXAMPLE
+     SetManagedEnvironmentSolutionCheckerEnforcementLevel -EnvironmentId 8d996ece-8558-4c4e-b459-a51b3beafdb4 -Level block
+     Sets solution checker enforcement for Managed environment with id 8d996ece-8558-4c4e-b459-a51b3beafdb4 to the "block" level.
+    #>
+    param
+    (
+        [Parameter(Mandatory = $true)]
+        [string]$EnvironmentId,
+
+        [Parameter(Mandatory = $true)]
+        [string][ValidateSet("none", "warn", "block")]$Level
+    )
+
+    Write-Host "Retrieving environment."
+
+    $environment = Get-AdminPowerAppEnvironment -EnvironmentName $EnvironmentId
+    if ($environment -eq $null)
+    {
+        Write-Host "No environment was found with the given id."
+        return
+    }
+
+    $governanceConfiguration = $environment.Internal.properties.governanceConfiguration
+    $governanceConfiguration = CoalesceGovernanceConfiguration -GovernanceConfiguration $governanceConfiguration
+    if ($governanceConfiguration.protectionLevel -ne "Standard")
+    {
+        Write-Host "The specified environment is not managed."
+        return
+    }
+    
+    $governanceConfiguration.settings.extendedSettings | Add-Member -MemberType NoteProperty -Name 'solutionCheckerMode' -Value $Level -Force
+    
+    $response = Set-AdminPowerAppEnvironmentGovernanceConfiguration -EnvironmentName $EnvironmentId -UpdatedGovernanceConfiguration $GovernanceConfiguration
+    if ($response.Code -ne 202)
+    {
+        Write-Host "Failed to set solution checker enforcement for the specified environment."
+        Write-Host $response.Internal.Message
+        return
+    }
+    
+    Write-Host "Set solution checker enforcement for the specified environment."    
+}
+
+function SetManagedEnvironmentMakerOnboardingMarkdownContent
+{
+    <#
+     .SYNOPSIS
+     Sets markdown content for maker onboarding for the specified Managed environment.
+     .DESCRIPTION
+     The SetManagedEnvironmentMakerOnboardingMarkdownContent cmdlet sets markdown content for maker onboarding for the specified Managed environment.
+     Use Get-Help SetManagedEnvironmentMakerOnboardingMarkdownContent -Examples for more details.
+     .PARAMETER EnvironmentId
+     The id (usually a GUID) of the environment.
+     .PARAMETER Markdown
+     The maker content Markdown.
+     .EXAMPLE
+     SetManagedEnvironmentMakerOnboardingMarkdownContent -EnvironmentId 8d996ece-8558-4c4e-b459-a51b3beafdb4 -Markdown "## Welcome to Power Apps
+### Let's get started"
+
+     Sets Maker onboarding markdown content for Managed environment with id 8d996ece-8558-4c4e-b459-a51b3beafdb4 to
+        ## Welcome to NR Power Apps
+        ### Let's get started
+    #>
+    param
+    (
+        [Parameter(Mandatory = $true)]
+        [string]$EnvironmentId,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Markdown
+    )
+
+    Write-Host "Retrieving environment."
+
+    $environment = Get-AdminPowerAppEnvironment -EnvironmentName $EnvironmentId
+    if ($environment -eq $null)
+    {
+        Write-Host "No environment was found with the given id."
+        return
+    }
+
+    $governanceConfiguration = $environment.Internal.properties.governanceConfiguration
+    $governanceConfiguration = CoalesceGovernanceConfiguration -GovernanceConfiguration $governanceConfiguration
+    if ($governanceConfiguration.protectionLevel -ne "Standard")
+    {
+        Write-Host "The specified environment is not managed."
+        return
+    }
+
+    $makerOnboardingChangeTimestamp = (Get-Date).ToUniversalTime().ToString("ddd, dd MMM yyyy HH:mm:ss 'GMT'")
+
+    $governanceConfiguration.settings.extendedSettings | Add-Member -MemberType NoteProperty -Name 'makerOnboardingMarkdown' -Value $Markdown -Force
+    $governanceConfiguration.settings.extendedSettings | Add-Member -MemberType NoteProperty -Name 'makerOnboardingTimestamp' -Value $makerOnboardingChangeTimestamp -Force
+
+    $response = Set-AdminPowerAppEnvironmentGovernanceConfiguration -EnvironmentName $EnvironmentId -UpdatedGovernanceConfiguration $GovernanceConfiguration
+    if ($response.Code -ne 202)
+    {
+        Write-Host "Failed to set markdown content for maker onboarding for the specified environment."
+        Write-Host $response.Internal.Message
+        return
+    }
+    
+    Write-Host "Set markdown content for maker onboarding for the specified environment."    
+}
+
+function SetManagedEnvironmentMakerOnboardingLearnMoreUrl
+{
+    <#
+     .SYNOPSIS
+     Sets Learn more URL for maker onboarding for the specified Managed environment.
+     .DESCRIPTION
+     The SetManagedEnvironmentMakerOnboardingLearnMoreUrl cmdlet Sets Learn more URL for maker onboarding for the specified Managed environment.
+     Use Get-Help SetManagedEnvironmentMakerOnboardingLearnMoreUrl -Examples for more details.
+     .PARAMETER EnvironmentId
+     The id (usually a GUID) of the environment.
+     .PARAMETER LearnMoreUrl
+     The maker onboarding learn more URL.
+     .EXAMPLE
+     SetManagedEnvironmentMakerOnboardingLearnMoreUrl -EnvironmentId 8d996ece-8558-4c4e-b459-a51b3beafdb4 -LearnMoreUrl "www.microsoft.com"
+     Sets Learn more URL for maker onboarding for Managed environment with id 8d996ece-8558-4c4e-b459-a51b3beafdb4 to "www.microsoft.com"
+    #>
+    param
+    (
+        [Parameter(Mandatory = $true)]
+        [string]$EnvironmentId,
+
+        [Parameter(Mandatory = $true)]
+        [string]$LearnMoreUrl
+    )
+
+    Write-Host "Retrieving environment."
+
+    $environment = Get-AdminPowerAppEnvironment -EnvironmentName $EnvironmentId
+    if ($environment -eq $null)
+    {
+        Write-Host "No environment was found with the given id."
+        return
+    }
+
+    $governanceConfiguration = $environment.Internal.properties.governanceConfiguration
+    $governanceConfiguration = CoalesceGovernanceConfiguration -GovernanceConfiguration $governanceConfiguration
+    if ($governanceConfiguration.protectionLevel -ne "Standard")
+    {
+        Write-Host "The specified environment is not managed."
+        return
+    }
+    
+    $makerOnboardingChangeTimestamp = (Get-Date).ToUniversalTime().ToString("ddd, dd MMM yyyy HH:mm:ss 'GMT'")
+
+    $governanceConfiguration.settings.extendedSettings | Add-Member -MemberType NoteProperty -Name 'makerOnboardingUrl' -Value $LearnMoreUrl -Force
+    $governanceConfiguration.settings.extendedSettings | Add-Member -MemberType NoteProperty -Name 'makerOnboardingTimestamp' -Value $makerOnboardingChangeTimestamp -Force
+
+    $response = Set-AdminPowerAppEnvironmentGovernanceConfiguration -EnvironmentName $EnvironmentId -UpdatedGovernanceConfiguration $GovernanceConfiguration
+    if ($response.Code -ne 202)
+    {
+        Write-Host "Failed to set Learn more URL for maker onboarding for the specified environment."
+        Write-Host $response.Internal.Message
+        return
+    }
+    
+    Write-Host "Set Learn more URL for maker onboarding for the specified environment."    
+}
+
+
 #internal, helper function
 function CheckHttpResponse
 {
@@ -662,6 +1836,119 @@ function CleanTestPolicies
             }
         }
     }
+}
+
+function IncludeInsightsForManagedEnvironmentsInPPACHomePageCards
+{
+    <#
+     .SYNOPSIS
+     Include insights for the specified Managed environment from PPAC homepage insights cards.
+     .DESCRIPTION
+     The IncludeInsightsForManagedEnvironmentsInPPACHomePageCards cmdlet includes insights for the specified Managed environment from PPAC homepage insights cards.
+     Use Get-Help IncludeInsightsForManagedEnvironmentsInPPACHomePageCards -Examples for more details.
+     .PARAMETER EnvironmentId
+     The id (usually a GUID) of the environment.
+     .EXAMPLE
+     IncludeInsightsForManagedEnvironmentsInPPACHomePageCards -EnvironmentId 8d996ece-8558-4c4e-b459-a51b3beafdb4
+     Includes insights for Managed environment with id 8d996ece-8558-4c4e-b459-a51b3beafdb4 in PPAC homepage insights cards.
+    #>
+    param
+    (
+        [Parameter(Mandatory = $true)]
+        [string]$EnvironmentId
+    )
+
+    Write-Host "Retrieving environment."
+
+    $environment = Get-AdminPowerAppEnvironment -EnvironmentName $EnvironmentId
+    if ($environment -eq $null)
+    {
+        Write-Host "No environment was found with the given id."
+        return
+    }
+
+    $governanceConfiguration = $environment.Internal.properties.governanceConfiguration
+    $governanceConfiguration = CoalesceGovernanceConfiguration -GovernanceConfiguration $governanceConfiguration
+    if ($governanceConfiguration.protectionLevel -ne "Standard")
+    {
+        Write-Host "The specified environment is not managed."
+        return
+    }
+
+    if ($governanceConfiguration.settings.extendedSettings.includeOnHomepageInsights -eq "True")
+    {
+        Write-Host "The specified environment is already included in PPAC homepage insights cards."
+        return
+    }
+    
+    $governanceConfiguration.settings.extendedSettings | Add-Member -MemberType NoteProperty -Name 'includeOnHomepageInsights' -Value "true" -Force
+
+    $response = Set-AdminPowerAppEnvironmentGovernanceConfiguration -EnvironmentName $EnvironmentId -UpdatedGovernanceConfiguration $GovernanceConfiguration
+
+    if ($response.Code -ne 202)
+    {
+        Write-Host "Failed to include insights for the specified environment in PPAC homepage insights cards."
+        Write-Host $response.Internal.Message
+        return
+    }
+    
+    Write-Host "Included insights for the specified environment in PPAC homepage insights cards."    
+}
+
+function ExcludeInsightsForManagedEnvironmentsInPPACHomePageCards
+{
+    <#
+     .SYNOPSIS
+     Excludes insights for the specified Managed environment from PPAC homepage insights cards.
+     .DESCRIPTION
+     The ExcludeInsightsForManagedEnvironmentsInPPACHomePageCards cmdlet excludes insights for the specified Managed environment from PPAC homepage insights cards.
+     Use Get-Help ExcludeInsightsForManagedEnvironmentsInPPACHomePageCards -Examples for more details.
+     .PARAMETER EnvironmentId
+     The id (usually a GUID) of the environment.
+     .EXAMPLE
+     ExcludeInsightsForManagedEnvironmentsInPPACHomePageCards -EnvironmentId 8d996ece-8558-4c4e-b459-a51b3beafdb4
+     Excludes insights for Managed environment with id 8d996ece-8558-4c4e-b459-a51b3beafdb4 in PPAC homepage insights cards.
+    #>
+    param
+    (
+        [Parameter(Mandatory = $true)]
+        [string]$EnvironmentId
+    )
+
+    Write-Host "Retrieving environment."
+
+    $environment = Get-AdminPowerAppEnvironment -EnvironmentName $EnvironmentId
+    if ($environment -eq $null)
+    {
+        Write-Host "No environment was found with the given id."
+        return
+    }
+
+    $governanceConfiguration = $environment.Internal.properties.governanceConfiguration
+    $governanceConfiguration = CoalesceGovernanceConfiguration -GovernanceConfiguration $governanceConfiguration
+    if ($governanceConfiguration.protectionLevel -ne "Standard")
+    {
+        Write-Host "The specified environment is not managed."
+        return
+    }
+
+    if ($governanceConfiguration.settings.extendedSettings.includeOnHomepageInsights -eq "False")
+    {
+        Write-Host "The specified environment is already excluded from PPAC homepage insights cards."
+        return
+    }
+    
+    $governanceConfiguration.settings.extendedSettings | Add-Member -MemberType NoteProperty -Name 'includeOnHomepageInsights' -Value "false" -Force
+
+    $response = Set-AdminPowerAppEnvironmentGovernanceConfiguration -EnvironmentName $EnvironmentId -UpdatedGovernanceConfiguration $GovernanceConfiguration
+    if ($response.Code -ne 202)
+    {
+        Write-Host "Failed to exclude insights for the specified environment in PPAC homepage cards."
+        Write-Host $response.Internal.Message
+        return
+    }
+    
+    Write-Host "Excluded insights for the specified environment in PPAC homepage cards."    
 }
 
 function CleanV1TestPolicies
@@ -766,7 +2053,7 @@ function CreateEnvironmentWithoutCDSDatabase
         [string]$LocationName = "unitedstates",
 
         [Parameter(Mandatory = $false)]
-        [string]$EnvironmentSku = "Trial"
+        [string]$EnvironmentSku = "Production"
     )
 
     Write-Host "CreateEnvironmentWithoutCDSDatabase: $EnvironmentDisplayName"
@@ -943,6 +2230,59 @@ function ListGetUpdateRemovePolicy
     StringsAreEqual -Expect "OK" -Actual $response.Description
 }
 
+function CoalesceGovernanceConfiguration
+{
+    <#
+     .SYNOPSIS
+     Internal helper method. Coalesces the given governance configuration object by initializing it if it is null.
+     .DESCRIPTION
+     The CoalesceGovernanceConfiguration cmdlet returns a non-null copy of the given governance configuration object.
+     Use Get-Help CoalesceGovernanceConfiguration -Examples for more details.
+     .PARAMETER GovernanceConfiguration
+     The governance configuration property of an environment.
+     .EXAMPLE
+     $GovernanceConfiguration = $null
+     CoalesceGovernanceConfiguration -GovernanceConfiguration $GovernanceConfiguration
+     Returns a governance configuration object with protectionLevel set to "Basic" and empty settings.
+     .EXAMPLE
+     $GovernanceConfiguration = [pscustomobject]@{
+          protectionLevel = "Basic"
+         settings = [pscustomobject]@{
+             extendedSettings = @{}
+         }
+     }
+     CoalesceGovernanceConfiguration -GovernanceConfiguration $GovernanceConfiguration
+     Returns the provided governance configuration object as is.
+    #>
+    param
+    (
+        [Parameter(Mandatory = $true)]
+        [object]$GovernanceConfiguration
+    )
+    
+    if ($GovernanceConfiguration -eq $null -or $GovernanceConfiguration.protectionLevel -eq $null)
+    {
+        $GovernanceConfiguration = [pscustomobject]@{
+            protectionLevel = "Basic"
+            settings = [pscustomobject]@{
+                extendedSettings = @{}
+            }
+        }
+    }
+    
+    if ($GovernanceConfiguration.settings -eq $null -or $GovernanceConfiguration.settings.extendedSettings -eq $null)
+    {
+        $GovernanceConfiguration = [pscustomobject]@{
+            protectionLevel = $GovernanceConfiguration.protectionLevel
+            settings = [pscustomobject]@{
+                extendedSettings = @{}
+            }
+        }
+    }
+    
+    return $GovernanceConfiguration
+}
+
 function PolicyCheck
 {
     param
@@ -1050,6 +2390,66 @@ function IsNotNull
     {
         throw $"Input objectis null."
     }
+}
+
+function IsFalse
+{
+    param
+    (
+        [Parameter(Mandatory = $true)]
+        [bool]$Result,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Message
+    )
+
+    if ($Result)
+    {
+        throw $Message
+    }
+}
+
+function IsTrue
+{
+    param
+    (
+        [Parameter(Mandatory = $true)]
+        [bool]$Result,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Message
+    )
+
+    if (-Not $Result)
+    {
+        throw $Message
+    }
+}
+
+function CheckConnectorExist
+{
+    param
+    (
+        [Parameter(Mandatory = $true)]
+        [object]$Policy,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Classification,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ConnectorName
+    )
+
+    $group = $Policy.connectorGroups | Where-Object { $_.classification -eq $Classification }
+    $connector = $group.connectors | where { $_.name -eq $ConnectorName }
+
+    if ($connector -eq $null)
+    {
+        # the connector is not in the connector group
+        return $false
+    }
+
+    return $true
 }
 
 function WriteStack
